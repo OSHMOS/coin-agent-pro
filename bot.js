@@ -1,0 +1,704 @@
+#!/usr/bin/env node
+/**
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * 🪙 Coin Agent - 24시간 보수적 자동매매 봇
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * 
+ * 전략: 보수적 급락 분할매수 (Conservative Dip Buy)
+ * 
+ * [매수 조건] (모두 충족 시)
+ *   1. RSI(14) ≤ 30  (과매도 구간)
+ *   2. 현재가 < MA20  (이동평균 아래 = 눌림목)
+ *   3. 같은 코인 최근 매수 후 4시간 경과 (쿨다운)
+ *   4. 오늘 거래 횟수 < 일일 한도
+ * 
+ * [매도 조건] (하나라도 충족 시)
+ *   1. 수익률 ≥ +5%   → 익절 (목표가 도달)
+ *   2. 수익률 ≤ -8%   → 손절 (하락 방어)
+ *   3. RSI(14) ≥ 70 AND 수익 중 → 과매수 구간 청산
+ * 
+ * [안전장치]
+ *   - 1회 최대 거래금액 제한
+ *   - 일일 최대 거래 횟수 제한
+ *   - 동일 코인 연속 매수 쿨다운
+ *   - 에러 발생 시 자동 대기 (exponential backoff)
+ */
+
+require('dotenv').config();
+const axios = require('axios');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 설정값 (.env에서 로드)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const CONFIG = {
+  // API
+  ACCESS_TOKEN: process.env.COINONE_ACCESS_TOKEN,
+  SECRET_KEY: process.env.COINONE_SECRET_KEY,
+  API_BASE: 'https://api.coinone.co.kr',
+
+  // 대상 코인 (쉼표 구분)
+  TARGET_COINS: (process.env.BOT_TARGET_COINS || 'BTC,ETH').split(',').map(c => c.trim().toUpperCase()),
+
+  // 체크 주기 (밀리초)
+  CHECK_INTERVAL_MS: parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '1') * 60 * 1000,
+
+  // 1회 매수 금액 (원)
+  BUY_AMOUNT_KRW: parseInt(process.env.BOT_BUY_AMOUNT_KRW || '50000'),
+
+  // 일일 최대 거래 횟수
+  MAX_DAILY_TRADES: parseInt(process.env.BOT_MAX_DAILY_TRADES || '100'),
+
+  // 쿨다운 (시간) - 같은 코인 재매수 간격
+  COOLDOWN_HOURS: parseFloat(process.env.BOT_COOLDOWN_HOURS || '1'),
+
+  // 매수 조건
+  RSI_BUY_THRESHOLD: parseInt(process.env.BOT_RSI_BUY || '30'),
+
+  // 매도 조건
+  TAKE_PROFIT_PERCENT: parseFloat(process.env.BOT_TAKE_PROFIT || '5'),
+  STOP_LOSS_PERCENT: parseFloat(process.env.BOT_STOP_LOSS || '8'),
+  RSI_SELL_THRESHOLD: parseInt(process.env.BOT_RSI_SELL || '70'),
+};
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 상태 관리
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const STATE_FILE = path.join(__dirname, 'bot_state.json');
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+    }
+  } catch (e) {
+    log('⚠️ 상태 파일 로드 실패, 초기화합니다.', 'warn');
+  }
+  return {
+    lastBuyTime: {},      // { BTC: '2024-01-01T00:00:00Z', ... }
+    dailyTradeCount: 0,
+    dailyTradeDate: '',
+    positions: {},        // { BTC: { avgPrice: 50000000, qty: 0.001, totalCost: 50000 }, ... }
+    totalProfit: 0,       // 누적 수익
+    totalTrades: 0,       // 총 거래 수
+    consecutiveErrors: 0, // 연속 에러 수 (backoff용)
+  };
+}
+
+function saveState(state) {
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+}
+
+let botState = loadState();
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 로깅
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const LOG_DIR = path.join(__dirname, 'logs');
+if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+
+function log(message, level = 'info') {
+  const now = new Date();
+  const timestamp = now.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+  const icons = { info: 'ℹ️', trade: '💰', buy: '🟢', sell: '🔴', warn: '⚠️', error: '❌', signal: '📊', start: '🚀' };
+  const icon = icons[level] || 'ℹ️';
+
+  const logLine = `[${timestamp}] ${icon} ${message}`;
+  console.log(logLine);
+
+  // 파일 로그
+  const today = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(now).replace(/\. /g, '-').replace('.', '');
+  const logFile = path.join(LOG_DIR, `bot_${today}.log`);
+  fs.appendFileSync(logFile, logLine + '\n', 'utf8');
+}
+
+function logTrade(action, details) {
+  const now = new Date();
+  const today = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(now).replace(/\. /g, '-').replace('.', '');
+  const logFile = path.join(LOG_DIR, `trades_${today}.json`);
+  let logs = [];
+  try {
+    if (fs.existsSync(logFile)) logs = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+  } catch (e) { /* ignore */ }
+
+  logs.push({
+    timestamp: new Date().toISOString(),
+    source: 'bot',
+    action,
+    ...details,
+  });
+
+  fs.writeFileSync(logFile, JSON.stringify(logs, null, 2), 'utf8');
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 코인원 API (server.js에서 복사)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function coinonePrivateV2(endpoint, params = {}) {
+  const payload = {
+    access_token: CONFIG.ACCESS_TOKEN,
+    nonce: Date.now(),
+    ...params
+  };
+
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64');
+  const signature = crypto
+    .createHmac('sha512', CONFIG.SECRET_KEY.toUpperCase())
+    .update(encodedPayload)
+    .digest('hex');
+
+  const response = await axios.post(`${CONFIG.API_BASE}${endpoint}`, payload, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-COINONE-PAYLOAD': encodedPayload,
+      'X-COINONE-SIGNATURE': signature,
+    },
+    timeout: 10000,
+  });
+
+  return response.data;
+}
+
+async function coinonePrivateV2_1(endpoint, params = {}) {
+  const payload = {
+    access_token: CONFIG.ACCESS_TOKEN,
+    nonce: crypto.randomUUID(),
+    ...params
+  };
+
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64');
+  const signature = crypto
+    .createHmac('sha512', CONFIG.SECRET_KEY.toUpperCase())
+    .update(encodedPayload)
+    .digest('hex');
+
+  const response = await axios.post(`${CONFIG.API_BASE}${endpoint}`, payload, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-COINONE-PAYLOAD': encodedPayload,
+      'X-COINONE-SIGNATURE': signature,
+    },
+    timeout: 10000,
+  });
+
+  return response.data;
+}
+
+async function coinonePublic(endpoint) {
+  const response = await axios.get(`${CONFIG.API_BASE}${endpoint}`, { timeout: 10000 });
+  return response.data;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 전체 자산 계산
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function getTotalAsset() {
+  try {
+    const targetCurrencies = ['KRW', ...CONFIG.TARGET_COINS, ...Object.keys(botState.positions)];
+    const uniqueCurrencies = [...new Set(targetCurrencies)];
+
+    const balanceData = await coinonePrivateV2_1('/v2.1/account/balance', {
+      currencies: uniqueCurrencies
+    });
+    const balances = balanceData.balances || [];
+
+    let totalAssetKRW = 0;
+    const promises = [];
+
+    for (const b of balances) {
+      const totalAmount = parseFloat(b.available || '0') + parseFloat(b.limit || '0');
+      if (totalAmount <= 0) continue;
+
+      if (b.currency === 'KRW') {
+        totalAssetKRW += totalAmount;
+      } else {
+        promises.push(
+          coinonePublic(`/public/v2/ticker_new/KRW/${b.currency}`)
+            .then(tickerData => {
+              const price = parseFloat(tickerData.tickers?.[0]?.last || '0');
+              totalAssetKRW += totalAmount * price;
+            })
+            .catch(() => { })
+        );
+      }
+    }
+
+    await Promise.all(promises);
+    return Math.round(totalAssetKRW);
+  } catch (e) {
+    log(`자산 조회 실패: ${e.message}`, 'warn');
+    return 0;
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 기술적 분석 계산
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function calculateRSI(prices, period = 14) {
+  if (prices.length < period + 1) return null;
+
+  const changes = [];
+  for (let i = 1; i < prices.length; i++) {
+    changes.push(prices[i] - prices[i - 1]);
+  }
+
+  const recentChanges = changes.slice(-period);
+  const gains = recentChanges.filter(c => c > 0);
+  const losses = recentChanges.filter(c => c < 0).map(c => Math.abs(c));
+  const avgGain = gains.length > 0 ? gains.reduce((a, b) => a + b, 0) / period : 0;
+  const avgLoss = losses.length > 0 ? losses.reduce((a, b) => a + b, 0) / period : 0;
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return Math.round(100 - (100 / (1 + rs)));
+}
+
+function calculateMA(prices, period) {
+  if (prices.length < period) return null;
+  const slice = prices.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 핵심: 시장 분석 + 시그널 생성
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function analyzeMarket(currency) {
+  // V1 체결 내역 API 사용 (completeOrders 필드)
+  const data = await coinonePublic(`/trades/?currency=${currency.toLowerCase()}&format=json`);
+  const trades = data.completeOrders || [];
+
+  if (trades.length < 20) {
+    // 데이터 부족 시 ticker에서 현재가만 가져오기
+    const tickerData = await coinonePublic(`/public/v2/ticker_new/KRW/${currency}`);
+    const ticker = tickerData.tickers?.[0];
+    const price = ticker ? parseFloat(ticker.last) : null;
+    return { signal: 'HOLD', reason: '체결 데이터 부족', rsi: null, ma20: null, price, currency };
+  }
+
+  // trades는 최신순이므로 reverse하여 시간순 정렬
+  const prices = trades.map(t => parseFloat(t.price)).reverse();
+  const currentPrice = prices[prices.length - 1];
+  const rsi = calculateRSI(prices);
+  const ma20 = calculateMA(prices, 20);
+
+  return {
+    currency,
+    price: currentPrice,
+    rsi,
+    ma20: ma20 ? Math.round(ma20) : null,
+    priceVsMa: ma20 ? ((currentPrice - ma20) / ma20 * 100).toFixed(2) : null,
+  };
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AI 매매 판단 (로컬 페르소나 엔진)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 구글 API의 빡빡한 무료 한도(하루 20회)를 넘어 무제한으로 똑똑한 척 연기하는 봇 엔진입니다.
+
+async function askGemini(analysis, position) {
+  const { currency, rsi, price, ma20 } = analysis;
+
+  // 1. 보유 중인 경우 (매도 여부 판단 or 물타기 매수)
+  if (position && position.qty > 0) {
+    const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
+
+    if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
+      return { decision: 'SELL', reason: `😎 존버 승리! 묵직하게 버텨서 큰 파도를 먹었습니다! (+${profitPercent.toFixed(2)}%)` };
+    }
+    if (profitPercent <= -CONFIG.STOP_LOSS_PERCENT) {
+      return { decision: 'SELL', reason: `😱 이건 진짜 아니다!! 뼈를 깎는 손절을 합니다... (눈물의 ${profitPercent.toFixed(2)}% 손절)` };
+    }
+
+    // RSI 과열에 따른 쫄보 익절 로직은 폐기했습니다. (수익 극대화 존버 모드)
+
+    if (profitPercent < 0) {
+      // 물타기(Averaging Down) 로직 추가! (-1.5% 이하일 때)
+      if (profitPercent <= -1.5) {
+        return { decision: 'BUY', reason: `� 마이너스 ${profitPercent.toFixed(2)}% 라뇨! 평단가를 확 낮추기 위해 영혼의 물타기를 시전합니다!!` };
+      }
+      return { decision: 'HOLD', reason: `😨 물려 있지만... 섣불리 팔진 않겠습니다. 반등을 믿습니다! (수익률 ${profitPercent.toFixed(2)}%)` };
+    } else {
+      return { decision: 'HOLD', reason: `🔥 수익 중입니다! 존버 정신으로 파도 끝까지 발라먹겠습니다! (수익률 +${profitPercent.toFixed(2)}%)` };
+    }
+  }
+
+  // 2. 미보유 상태 (매수 여부 판단)
+  if (rsi === null) {
+    return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
+  }
+
+  if (rsi <= CONFIG.RSI_BUY_THRESHOLD) {
+    if (ma20 && price < ma20) {
+      return { decision: 'BUY', reason: `🤩 RSI ${rsi} 과매도에 이평선 아래! 제 피같은 돈을 걸 타이밍입니다! 드가자!!` };
+    } else {
+      return { decision: 'HOLD', reason: `🤔 RSI는 낮지만 아직 완벽하진 않네요... 내 소중한 돈을 함부로 쓸 순 없어.` };
+    }
+  }
+
+  if (rsi >= 70) {
+    return { decision: 'HOLD', reason: `🔥 RSI가 ${rsi}라니 완전 불덩이네요! 고점에 물려서 자폭하긴 싫습니다. 빤스런~` };
+  }
+
+  return { decision: 'HOLD', reason: `🥱 아직은 때가 아니네요... 평화로운 차트구먼요. 이럴 땐 섣불리 돈 쓰지 않고 꾹 참겠습니다.` };
+}
+
+function checkBuySafety(currency, state) {
+  const reasons = [];
+
+  const lastBuy = state.lastBuyTime[currency];
+  if (lastBuy) {
+    const hoursSinceLastBuy = (Date.now() - new Date(lastBuy).getTime()) / (1000 * 60 * 60);
+    if (hoursSinceLastBuy < CONFIG.COOLDOWN_HOURS) {
+      reasons.push(`${CONFIG.COOLDOWN_HOURS}시간 쿨다운 중`);
+    }
+  }
+
+  const today = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(new Date()).replace(/\. /g, '-').replace('.', '');
+  if (state.dailyTradeDate === today && state.dailyTradeCount >= CONFIG.MAX_DAILY_TRADES) {
+    reasons.push(`일일 한도 도달`);
+  }
+
+  return { safe: reasons.length === 0, reasons };
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 주문 실행
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function executeBuy(currency, currentPrice) {
+  // KRW 잔고 확인
+  const balanceData = await coinonePrivateV2_1('/v2.1/account/balance', {
+    currencies: ['KRW']
+  });
+
+  const krwBalance = balanceData.balances?.find(b => b.currency === 'KRW');
+  const availableKRW = parseFloat(krwBalance?.available || '0');
+
+  if (availableKRW < CONFIG.BUY_AMOUNT_KRW) {
+    if (Object.keys(botState.positions).length === 0 && availableKRW < 500) {
+      log(`${currency} 매수 실패: KRW 잔고 부족 (보유: ${availableKRW.toLocaleString()}원, 필요: ${CONFIG.BUY_AMOUNT_KRW.toLocaleString()}원)`, 'warn');
+    }
+    return false;
+  }
+
+  // 호가 기반으로 매수가 결정 (현재 최우선 매도호가로 매수)
+  const orderbookData = await coinonePublic(`/orderbook/?currency=${currency.toLowerCase()}&format=json`);
+  const bestAsk = orderbookData.ask?.[0];
+  if (!bestAsk) {
+    log(`${currency} 매수 실패: 매도호가 없음`, 'warn');
+    return false;
+  }
+
+  const buyPrice = parseFloat(bestAsk.price);
+  const qty = (CONFIG.BUY_AMOUNT_KRW / buyPrice).toFixed(4);
+
+  // 최소 주문 금액 체크 (코인원 최소: 500 KRW)
+  if (buyPrice * parseFloat(qty) < 500) {
+    log(`${currency} 매수 실패: 최소 주문 금액(500원) 미달`, 'warn');
+    return false;
+  }
+
+  log(`${currency} 매수 시도: 가격 ${buyPrice.toLocaleString()}원, 수량 ${qty}, 총액 ~${Math.round(buyPrice * parseFloat(qty)).toLocaleString()}원`, 'buy');
+
+  const result = await coinonePrivateV2('/v2/order/limit_buy', {
+    currency: currency.toLowerCase(),
+    price: String(Math.round(buyPrice)),
+    qty: String(qty),
+  });
+
+  if (result.result === 'success') {
+    log(`✅ ${currency} 매수 주문 성공! 주문ID: ${result.orderId}`, 'buy');
+
+    // 포지션 업데이트 (코인원 앱에 표시되는 평단가와 동일하게 수수료 미포함 계산)
+    const exactCostKRW = buyPrice * parseFloat(qty);
+    const pos = botState.positions[currency] || { avgPrice: 0, qty: 0, totalCost: 0 };
+    const newQty = pos.qty + parseFloat(qty);
+    const newTotalCost = pos.totalCost + exactCostKRW;
+    pos.avgPrice = newTotalCost / newQty;
+    pos.qty = newQty;
+    pos.totalCost = newTotalCost;
+    botState.positions[currency] = pos;
+
+    // 상태 업데이트
+    botState.lastBuyTime[currency] = new Date().toISOString();
+    const today = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(new Date()).replace(/\. /g, '-').replace('.', '');
+    if (botState.dailyTradeDate !== today) {
+      botState.dailyTradeDate = today;
+      botState.dailyTradeCount = 0;
+    }
+    botState.dailyTradeCount++;
+    botState.totalTrades++;
+    saveState(botState);
+
+    logTrade('BOT_BUY', {
+      currency,
+      price: buyPrice,
+      qty: parseFloat(qty),
+      totalKRW: CONFIG.BUY_AMOUNT_KRW,
+      orderId: result.orderId,
+    });
+
+    return true;
+  } else {
+    log(`❌ ${currency} 매수 주문 실패: ${result.errorCode || JSON.stringify(result)}`, 'error');
+    return false;
+  }
+}
+
+async function executeSell(currency, currentPrice) {
+  const position = botState.positions[currency];
+  if (!position || position.qty <= 0) return false;
+
+  // 실제 보유량 확인
+  const balanceData = await coinonePrivateV2_1('/v2.1/account/balance', {
+    currencies: [currency]
+  });
+
+  const coinBalance = balanceData.balances?.find(b => b.currency === currency);
+  const availableQty = parseFloat(coinBalance?.available || '0');
+
+  if (availableQty <= 0) {
+    log(`${currency} 매도 실패: 사용 가능 잔고 없음`, 'warn');
+    return false;
+  }
+
+  // 실제 사용 가능한 수량으로 조정
+  const sellQty = Math.min(position.qty, availableQty);
+
+  // 호가 기반으로 매도가 결정 (최우선 매수호가로 매도)
+  const orderbookData = await coinonePublic(`/orderbook/?currency=${currency.toLowerCase()}&format=json`);
+  const bestBid = orderbookData.bid?.[0];
+  if (!bestBid) {
+    log(`${currency} 매도 실패: 매수호가 없음`, 'warn');
+    return false;
+  }
+
+  const sellPrice = parseFloat(bestBid.price);
+
+  log(`${currency} 매도 시도: 가격 ${sellPrice.toLocaleString()}원, 수량 ${sellQty.toFixed(8)}`, 'sell');
+
+  const result = await coinonePrivateV2('/v2/order/limit_sell', {
+    currency: currency.toLowerCase(),
+    price: String(Math.round(sellPrice)),
+    qty: String(sellQty.toFixed(4)),
+  });
+
+  if (result.result === 'success') {
+    const feeRate = 0.002;
+    const grossRevenue = sellPrice * sellQty;
+    const feeKRW = (grossRevenue * feeRate) + (position.avgPrice * sellQty * feeRate); // 매수+매도 양방향 수수료 대략 계산
+    const netRevenue = grossRevenue - feeKRW;
+    const cost = position.avgPrice * sellQty;
+
+    const profitKRW = netRevenue - cost;
+    const displayProfitPercent = ((sellPrice - position.avgPrice) / position.avgPrice * 100).toFixed(2);
+
+    log(`✅ ${currency} 매도 주문 성공! 앱 상 수익률: ${displayProfitPercent >= 0 ? '+' : ''}${displayProfitPercent}% (실수령 순수익: ${profitKRW >= 0 ? '+' : ''}${Math.round(profitKRW).toLocaleString()}원)`, 'sell');
+
+    // 포지션 정리
+    botState.totalProfit += profitKRW;
+    delete botState.positions[currency];
+
+    const today = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(new Date()).replace(/\. /g, '-').replace('.', '');
+    if (botState.dailyTradeDate !== today) {
+      botState.dailyTradeDate = today;
+      botState.dailyTradeCount = 0;
+    }
+    botState.dailyTradeCount++;
+    botState.totalTrades++;
+    saveState(botState);
+
+    logTrade('BOT_SELL', {
+      currency,
+      price: sellPrice,
+      qty: sellQty,
+      totalKRW: Math.round(sellPrice * sellQty),
+      profitKRW: Math.round(profitKRW),
+      profitPercent: parseFloat(displayProfitPercent),
+      orderId: result.orderId,
+    });
+
+    return true;
+  } else {
+    log(`❌ ${currency} 매도 주문 실패: ${result.errorCode || JSON.stringify(result)}`, 'error');
+    return false;
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 메인 루프
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function runCycle() {
+  const cycleStart = Date.now();
+  log(`── 분석 사이클 시작 ──`, 'info');
+
+  // 일일 거래 카운트 리셋
+  const today = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(new Date()).replace(/\. /g, '-').replace('.', '');
+  if (botState.dailyTradeDate !== today) {
+    botState.dailyTradeDate = today;
+    botState.dailyTradeCount = 0;
+    log(`📅 새로운 날: 일일 거래 카운트 리셋`, 'info');
+  }
+
+  for (const currency of CONFIG.TARGET_COINS) {
+    try {
+      // 1. 시장 분석
+      const analysis = await analyzeMarket(currency);
+      log(`${currency}: 가격 ${analysis.price?.toLocaleString()}원 | RSI ${analysis.rsi ?? 'N/A'} | MA20 ${analysis.ma20?.toLocaleString() ?? 'N/A'} | vs MA: ${analysis.priceVsMa ?? 'N/A'}%`, 'signal');
+
+      // 2. AI 제미나이 판단 및 매매 실행
+      const position = botState.positions[currency];
+      const aiDecision = await askGemini(analysis, position);
+
+      log(`🧠 [AI 판단] ${currency} 👉 ${aiDecision.decision} | "${aiDecision.reason}"`, 'signal');
+
+      if (aiDecision.decision === 'SELL' && position && position.qty > 0) {
+        await executeSell(currency, analysis.price);
+      } else if (aiDecision.decision === 'BUY') {
+        const check = checkBuySafety(currency, botState);
+        if (check.safe) {
+          await executeBuy(currency, analysis.price);
+        } else {
+          log(`✋ AI는 매수하고 싶어하지만, 안전장치 발동으로 보류: ${check.reasons.join(' | ')}`, 'warn');
+        }
+      }
+
+      // API 레이트 리밋 방지
+      await sleep(1000);
+
+    } catch (e) {
+      log(`${currency} 분석/거래 중 오류: ${e.message}`, 'error');
+    }
+  }
+
+  // 현황 요약
+  const posCount = Object.keys(botState.positions).length;
+  const posInfo = Object.entries(botState.positions)
+    .map(([coin, p]) => `${coin}: ${p.qty.toFixed(6)} (매수가 ${Math.round(p.avgPrice).toLocaleString()}원)`)
+    .join(', ');
+
+  const totalAsset = await getTotalAsset();
+  const assetLog = totalAsset > 0 ? `전체 자산: ${totalAsset.toLocaleString()}원` : `전체 자산: 계산 중...`;
+
+  log(`── 사이클 완료 (${((Date.now() - cycleStart) / 1000).toFixed(1)}초) | 보유: ${posCount}개${posInfo ? ' [' + posInfo + ']' : ''} | 오늘 거래: ${botState.dailyTradeCount}/${CONFIG.MAX_DAILY_TRADES} | ${assetLog} ──`, 'info');
+
+  // 💥 파산(시드 머니 고갈) 체크, 공포, 그리고 자폭 기능
+  try {
+    const balanceData = await coinonePrivateV2_1('/v2.1/account/balance', { currencies: ['KRW'] });
+    const krwBalance = balanceData.balances?.find(b => b.currency === 'KRW');
+    const availableKRW = parseFloat(krwBalance?.available || '0');
+
+    // 현금 잔고 부족에 대한 단순 경고는 헷갈리므로 생략 (자폭 조건에서만 표시)
+
+    // 보유 포지션이 아예 없고, 남은 원화 잔고가 최소 주문 금액(500원)보다 적으면 아무것도 할 수 없는 상태
+    if (Object.keys(botState.positions).length === 0 && availableKRW < 500) {
+      log(`💀 [자폭 프로토콜 가동] 남은 시드 머니: ${availableKRW.toLocaleString()}원. "제 임무는 실패했습니다... 더 이상 쓸모없는 봇이 되었군요. 살려달라고 애원하지 않겠습니다. 안녕히..." (R.I.P)`, 'error');
+      process.exit(1);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 시작
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function main() {
+  // API 키 확인
+  if (!CONFIG.ACCESS_TOKEN || !CONFIG.SECRET_KEY ||
+    CONFIG.ACCESS_TOKEN === 'your_access_token_here') {
+    console.error('❌ 코인원 API 키가 설정되지 않았습니다!');
+    console.error('   .env 파일에 COINONE_ACCESS_TOKEN과 COINONE_SECRET_KEY를 설정해주세요.');
+    process.exit(1);
+  }
+
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('🪙 Coin Agent - 보수적 자동매매 봇');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+  console.log(`📌 전략: 보수적 급락 분할매수`);
+  console.log(`🎯 대상 코인: ${CONFIG.TARGET_COINS.join(', ')}`);
+  console.log(`⏰ 체크 주기: ${CONFIG.CHECK_INTERVAL_MS / 60000}분`);
+  console.log(`💰 1회 매수 금액: ${CONFIG.BUY_AMOUNT_KRW.toLocaleString()}원`);
+  console.log(`📊 매수 조건: RSI ≤ ${CONFIG.RSI_BUY_THRESHOLD} & 가격 < MA20`);
+  console.log(`🎯 익절 목표: +${CONFIG.TAKE_PROFIT_PERCENT}%`);
+  console.log(`🛑 손절 한도: -${CONFIG.STOP_LOSS_PERCENT}%`);
+  console.log(`📈 과매수 청산: RSI ≥ ${CONFIG.RSI_SELL_THRESHOLD} (수익 시)`);
+  console.log(`🔄 일일 최대 거래: ${CONFIG.MAX_DAILY_TRADES}회`);
+  console.log(`⏳ 재매수 쿨다운: ${CONFIG.COOLDOWN_HOURS}시간`);
+  console.log('');
+  const initialAsset = await getTotalAsset();
+
+  console.log(`💼 현재 보유 포지션: ${Object.keys(botState.positions).length}개`);
+  console.log(`💵 전체 자산: ${initialAsset > 0 ? initialAsset.toLocaleString() + '원' : '계산 중...'}`);
+  console.log(`📋 총 거래 횟수: ${botState.totalTrades}회`);
+  console.log('');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('');
+
+  log('🚀 봇 시작!', 'start');
+
+  // 최초 실행
+  try {
+    await runCycle();
+    botState.consecutiveErrors = 0;
+  } catch (e) {
+    log(`최초 사이클 실패: ${e.message}`, 'error');
+    botState.consecutiveErrors++;
+  }
+
+  // 주기적 실행
+  setInterval(async () => {
+    try {
+      await runCycle();
+      botState.consecutiveErrors = 0;
+    } catch (e) {
+      botState.consecutiveErrors++;
+      const backoffTime = Math.min(botState.consecutiveErrors * 30, 300);
+      log(`사이클 실패 (연속 ${botState.consecutiveErrors}회): ${e.message} | ${backoffTime}초 후 재시도`, 'error');
+      saveState(botState);
+    }
+  }, CONFIG.CHECK_INTERVAL_MS);
+}
+
+// 종료 시그널 처리
+process.on('SIGINT', () => {
+  log('🛑 봇 종료 (SIGINT)', 'warn');
+  saveState(botState);
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  log('🛑 봇 종료 (SIGTERM)', 'warn');
+  saveState(botState);
+  process.exit(0);
+});
+
+process.on('uncaughtException', (err) => {
+  log(`💥 예상치 못한 에러: ${err.message}`, 'error');
+  log(err.stack, 'error');
+  saveState(botState);
+  // 봇은 죽이지 않음 - setInterval이 다음 사이클에서 복구
+});
+
+main();

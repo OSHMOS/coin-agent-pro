@@ -1,0 +1,53 @@
+{
+  "name": "coin-agent",
+  "version": "1.0.0",
+  "description": "Coinone 자동매매 MCP 서버",
+  "main": "main.js",
+  "scripts": {
+    "start": "node server.js",
+    "bot": "node bot.js",
+    "gui": "electron .",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "coinone",
+    "mcp",
+    "trading"
+  ],
+  "author": "CoinAgent",
+  "license": "ISC",
+  "build": {
+    "appId": "com.coinagent.app",
+    "productName": "CoinAgent Pro",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": ["dmg"]
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "files": [
+      "**/*",
+      "!**/.env",
+      "!**/logs",
+      "!**/bot_state.json"
+    ]
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "axios": "^1.7.9",
+    "dotenv": "^17.2.3",
+    "technicalindicators": "^3.1.0"
+  },
+  "devDependencies": {
+    "electron": "^40.6.1",
+    "electron-builder": "^26.8.1"
+  }
+}

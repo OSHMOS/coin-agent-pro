@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coin Agent Pro</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Title bar area for macOS -->
+        <div class="title-bar">
+            <span>🪙 Coin Agent GUI</span>
+        </div>
+
+        <div class="content-wrapper">
+            <!-- Sidebar / Settings -->
+            <div class="sidebar panel glass-panel">
+                <h2>API 설정 (보안)</h2>
+
+                <div class="form-group">
+                    <label>코인원 Access Token</label>
+                    <input type="password" id="access_token" placeholder="Your Access Token">
+                </div>
+
+                <div class="form-group">
+                    <label>코인원 Secret Key</label>
+                    <input type="password" id="secret_key" placeholder="Your Secret Key">
+                </div>
+
+                <div class="form-group">
+                    <label>Gemini API 키 (두뇌)</label>
+                    <input type="password" id="gemini_key" placeholder="AI 판단용 Gemini Key">
+                </div>
+
+                <h2>봇 세부 설정</h2>
+                <div class="form-group">
+                    <label>대상 코인 선택 (다중 선택 가능)</label>
+                    <div class="coin-selector" id="target_coins"></div>
+                </div>
+                <div class="form-group">
+                    <label>1회 매수 금액 (원)</label>
+                    <input type="number" id="buy_amount" placeholder="10000">
+                </div>
+
+                <button class="btn btn-save" id="btn_save">설정 저장하기</button>
+            </div>
+
+            <!-- Main Content Area -->
+            <div class="main-panel">
+
+                <div class="status-bar panel glass-panel">
+                    <div class="status-indicator">
+                        <div class="bot-icon">🤖</div>
+                        <div class="status-details">
+                            <span class="status-title">AI 트레이딩 봇 엔진</span>
+                            <div class="status-row">
+                                <div class="led" id="status_led"></div>
+                                <span id="status_text">오프라인상태</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="btn btn-start glowing" id="btn_toggle_bot">🚀 봇 가동하기</button>
+                </div>
+
+                <div class="terminal panel glass-panel">
+                    <div class="terminal-header">
+                        <div class="dots">
+                            <span class="dot red"></span>
+                            <span class="dot yellow"></span>
+                            <span class="dot green"></span>
+                        </div>
+                        <span>Live Terminal Console</span>
+                    </div>
+                    <div class="terminal-body" id="console_output">
+                        <div class="log-line welcome-text">
+                            <span style="color:var(--primary);">로컬 봇 UI에 오신 것을 환영합니다!</span><br />
+                            1. 좌측에서 설정값을 확인하고 저장해주세요.<br />
+                            2. 우측 상단의 [봇 가동하기]를 누르면 백그라운드 엔진이 켜집니다.
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+
+</html>
