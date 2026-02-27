@@ -62,8 +62,8 @@ const CONFIG = {
   RSI_BUY_THRESHOLD: parseInt(process.env.BOT_RSI_BUY || '30'),
 
   // 매도 조건
-  TAKE_PROFIT_PERCENT: parseFloat(process.env.BOT_TAKE_PROFIT || '5'),
-  STOP_LOSS_PERCENT: parseFloat(process.env.BOT_STOP_LOSS || '8'),
+  TAKE_PROFIT_PERCENT: 1.5, // 1.5%로 강제 고정
+  STOP_LOSS_PERCENT: 999999, // 하락 손절 절대 안 함 (보유 유지)
   RSI_SELL_THRESHOLD: parseInt(process.env.BOT_RSI_SELL || '70'),
 };
 
@@ -318,20 +318,12 @@ async function askGemini(analysis, position) {
     const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
 
     if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
-      return { decision: 'SELL', reason: `😎 존버 승리! 묵직하게 버텨서 큰 파도를 먹었습니다! (+${profitPercent.toFixed(2)}%)` };
+      return { decision: 'SELL', reason: `😎 소소하지만 확실한 행복! 원금 보존의 법칙 발동! (+${profitPercent.toFixed(2)}% 익절 완료)` };
     }
-    if (profitPercent <= -CONFIG.STOP_LOSS_PERCENT) {
-      return { decision: 'SELL', reason: `😱 이건 진짜 아니다!! 뼈를 깎는 손절을 합니다... (눈물의 ${profitPercent.toFixed(2)}% 손절)` };
-    }
-
-    // RSI 과열에 따른 쫄보 익절 로직은 폐기했습니다. (수익 극대화 존버 모드)
+    // 손절 절대로 안 함
 
     if (profitPercent < 0) {
-      // 물타기(Averaging Down) 로직 추가! (-1.5% 이하일 때)
-      if (profitPercent <= -1.5) {
-        return { decision: 'BUY', reason: `� 마이너스 ${profitPercent.toFixed(2)}% 라뇨! 평단가를 확 낮추기 위해 영혼의 물타기를 시전합니다!!` };
-      }
-      return { decision: 'HOLD', reason: `😨 물려 있지만... 섣불리 팔진 않겠습니다. 반등을 믿습니다! (수익률 ${profitPercent.toFixed(2)}%)` };
+      return { decision: 'HOLD', reason: `😨 물려 있지만... 절대 털리지 않습니다. 원상복구 될 때까지 존버합니다! (수익률 ${profitPercent.toFixed(2)}%)` };
     } else {
       return { decision: 'HOLD', reason: `🔥 수익 중입니다! 존버 정신으로 파도 끝까지 발라먹겠습니다! (수익률 +${profitPercent.toFixed(2)}%)` };
     }
