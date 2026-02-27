@@ -3,7 +3,7 @@
 코인원(Coinone) 자동매매 봇 (Electron 기반 데스크탑 앱)
 
 ### Mac
-<video src="Mac용 빌드.mov" controls="controls" style="max-width: 100%;"></video>
+<video src="https://github.com/OSHMOS/coin-agent-pro/raw/main/mac_build.mov" controls="controls" style="max-width: 100%;"></video>
 
 ## 주요 기능
 - 코인원 API를 연동한 실시간 자산 조회 및 자동 매수/매도 시스템
