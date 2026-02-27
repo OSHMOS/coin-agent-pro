@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, fork } = require('child_process');
 const fs = require('fs');
 
 let mainWindow;
@@ -43,7 +43,8 @@ app.on('window-all-closed', () => {
 // 환경변수(.env) 읽기
 ipcMain.handle('get-config', () => {
   try {
-    const envFile = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+    const envPath = path.join(app.getPath('userData'), '.env');
+    const envFile = fs.readFileSync(envPath, 'utf8');
     const config = require('dotenv').parse(envFile);
     return config;
   } catch (e) {
@@ -56,7 +57,7 @@ ipcMain.handle('save-config', (event, newConfig) => {
   try {
     let output = '';
     // 기존 .env 파일을 읽어서 주석은 최대한 보존하고 값만 교체하는 로직
-    const envPath = path.join(__dirname, '.env');
+    const envPath = path.join(app.getPath('userData'), '.env');
     let existingLines = [];
     if (fs.existsSync(envPath)) {
       existingLines = fs.readFileSync(envPath, 'utf8').split('\n');
@@ -103,8 +104,12 @@ ipcMain.handle('toggle-bot', (event) => {
     return false; // isRunning = false
   } else {
     // 봇 꺼져 있으면 켜기 (새로운 자식 프로세스로 node bot.js 실행)
-    botProcess = spawn('node', [path.join(__dirname, 'bot.js')], {
-      env: { ...process.env }, // 새로운 .env를 위해 현재 환경변수 넘기지만, bot.js 내에서 dotenv 다시 로드함
+    botProcess = spawn(process.execPath, [path.join(__dirname, 'bot.js')], {
+      env: {
+        ELECTRON_RUN_AS_NODE: '1',
+        ELECTRON_USER_DATA: app.getPath('userData'),
+        ...process.env
+      },
     });
 
     botProcess.stdout.on('data', (data) => {

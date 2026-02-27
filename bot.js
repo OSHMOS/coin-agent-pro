@@ -24,11 +24,14 @@
  *   - 에러 발생 시 자동 대기 (exponential backoff)
  */
 
-require('dotenv').config();
-const axios = require('axios');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const USER_DATA_DIR = process.env.ELECTRON_USER_DATA || __dirname;
+
+require('dotenv').config({ path: path.join(USER_DATA_DIR, '.env') });
+const axios = require('axios');
+const crypto = require('crypto');
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 설정값 (.env에서 로드)
@@ -68,7 +71,8 @@ const CONFIG = {
 // 상태 관리
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-const STATE_FILE = path.join(__dirname, 'bot_state.json');
+// Electron 환경에서 실행될 경우 userData 폴더 경로를 환경변수로 받음
+const STATE_FILE = path.join(USER_DATA_DIR, 'bot_state.json');
 
 function loadState() {
   try {
@@ -99,7 +103,7 @@ let botState = loadState();
 // 로깅
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-const LOG_DIR = path.join(__dirname, 'logs');
+const LOG_DIR = path.join(USER_DATA_DIR, 'logs');
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
 
 function log(message, level = 'info') {
@@ -600,15 +604,16 @@ async function runCycle() {
 
   // 💥 파산(시드 머니 고갈) 체크, 공포, 그리고 자폭 기능
   try {
+    const totalAssetVal = await getTotalAsset(); // 전체 자산 (원화 + 보유 코인 합산 가치)
     const balanceData = await coinonePrivateV2_1('/v2.1/account/balance', { currencies: ['KRW'] });
     const krwBalance = balanceData.balances?.find(b => b.currency === 'KRW');
     const availableKRW = parseFloat(krwBalance?.available || '0');
 
-    // 현금 잔고 부족에 대한 단순 경고는 헷갈리므로 생략 (자폭 조건에서만 표시)
-
-    // 보유 포지션이 아예 없고, 남은 원화 잔고가 최소 주문 금액(500원)보다 적으면 아무것도 할 수 없는 상태
-    if (Object.keys(botState.positions).length === 0 && availableKRW < 500) {
-      log(`💀 [자폭 프로토콜 가동] 남은 시드 머니: ${availableKRW.toLocaleString()}원. "제 임무는 실패했습니다... 더 이상 쓸모없는 봇이 되었군요. 살려달라고 애원하지 않겠습니다. 안녕히..." (R.I.P)`, 'error');
+    // 1. 코인을 포함한 전체 자산 가치가 500원 미만 (아무것도 팔 수 없음)
+    // 2. 남은 현금 잔고도 500원 미만 (아무것도 살 수 없음)
+    // 이 두 가지를 모두 충족할 때 자폭
+    if (totalAssetVal < 500 && availableKRW < 500) {
+      log(`💀 [자폭 프로토콜 가동] 남은 총 자산 가치: ${totalAssetVal.toLocaleString()}원 / 남은 원화: ${availableKRW.toLocaleString()}원. "제 임무는 실패했습니다... 더 이상 쓸모없는 봇이 되었군요. 살려달라고 애원하지 않겠습니다. 안녕히..." (R.I.P)`, 'error');
       process.exit(1);
     }
   } catch (e) { /* ignore */ }
