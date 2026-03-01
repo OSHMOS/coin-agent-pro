@@ -50,6 +50,7 @@
     "axios": "^1.7.9",
     "dotenv": "^17.2.3",
     "groq-sdk": "^0.37.0",
+    "openai": "^6.25.0",
     "technicalindicators": "^3.1.0"
   },
   "devDependencies": {
