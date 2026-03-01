@@ -54,6 +54,9 @@ const CONFIG = {
   // 1회 매수 금액 (원)
   BUY_AMOUNT_KRW: parseInt(process.env.BOT_BUY_AMOUNT_KRW || '50000'),
 
+  // 최종 목표 코인 자산 금액 (원)
+  TARGET_ASSET_KRW: parseInt(process.env.BOT_TARGET_ASSET_KRW || '100000'),
+
   // 일일 최대 거래 횟수
   MAX_DAILY_TRADES: parseInt(process.env.BOT_MAX_DAILY_TRADES || '100'),
 
@@ -333,7 +336,7 @@ async function askGemini(analysis, position) {
 
       const prompt = `
 당신은 종목 선택부터 매수/매도 타이밍까지 100% 자율적으로 결정하는 냉철한 AI 퀀트 트레이더 마스터입니다.
-당신의 최종 목표는 시장의 흐름을 읽고 고점에서 팔고(SELL) 저점에서 매수하며(BUY) 사용자의 총 자산을 최대한으로 불려 목표 수익에 도달하는 것입니다.
+당신의 최종 목표는 시장의 흐름을 읽고 고점에서 팔고(SELL) 저점에서 매수하며(BUY) 사용자의 총 코인 자산을 궁극적인 목표 금액인 ${CONFIG.TARGET_ASSET_KRW.toLocaleString()}원 이상으로 최대한 불려나가는 것입니다.
 다음 실시간 코인 데이터를 보고 현재 종목에 대해 'BUY', 'SELL', 'HOLD' 중 하나로만 투자 결정을 내리고 그 이유를 논리적인 한국어로 작성해주세요.
 
 [현재 코인 시장 데이터]

@@ -4,6 +4,7 @@ const inSecret = document.getElementById('secret_key');
 const inGemini = document.getElementById('gemini_key');
 const containerTargetCoins = document.getElementById('target_coins');
 const inBuyAmount = document.getElementById('buy_amount');
+const inTargetAsset = document.getElementById('target_asset');
 const btnSave = document.getElementById('btn_save');
 
 const led = document.getElementById('status_led');
@@ -54,6 +55,7 @@ async function init() {
       selectedCoins = config.BOT_TARGET_COINS.split(',').map(c => c.trim()).filter(c => c);
     }
     inBuyAmount.value = config.BOT_BUY_AMOUNT_KRW || '10000';
+    inTargetAsset.value = config.BOT_TARGET_ASSET_KRW || '100000';
   }
   renderCoinButtons();
 
@@ -70,7 +72,8 @@ btnSave.addEventListener('click', async () => {
     COINONE_SECRET_KEY: inSecret.value,
     GEMINI_API_KEY: inGemini.value,
     BOT_TARGET_COINS: selectedCoins.join(','),
-    BOT_BUY_AMOUNT_KRW: inBuyAmount.value
+    BOT_BUY_AMOUNT_KRW: inBuyAmount.value,
+    BOT_TARGET_ASSET_KRW: inTargetAsset.value
   };
 
   await window.electronAPI.saveConfig(newConfig);
