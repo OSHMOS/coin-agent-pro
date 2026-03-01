@@ -650,8 +650,8 @@ async function runCycle() {
         }
       }
 
-      // API 레이트 리밋 방지
-      await sleep(1000);
+      // API 레이트 리밋 방지 (OpenRouter 무료 한도인 1분당 8회를 넘지 않기 위해 코인 1개 탐색 후 8초씩 강제 휴식)
+      await sleep(8000);
 
     } catch (e) {
       log(`${currency} 분석/거래 중 오류: ${e.message}`, 'error');
