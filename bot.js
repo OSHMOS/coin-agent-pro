@@ -360,7 +360,7 @@ async function askGemini(analysis, position) {
 
       const response = await glmAI.chat.completions.create({
         messages: [{ role: "user", content: prompt }],
-        model: "glm-4-flash",
+        model: "glm-5",
       });
       const text = response.choices[0]?.message?.content || "";
       // 마크다운 백틱 및 공백 제거 후 JSON 파싱
