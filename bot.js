@@ -32,8 +32,9 @@ const USER_DATA_DIR = process.env.ELECTRON_USER_DATA || __dirname;
 require('dotenv').config({ path: path.join(USER_DATA_DIR, '.env') });
 const axios = require('axios');
 const crypto = require('crypto');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+const { GoogleGenerativeAI } = require('@google/generative-ai'); // 레거시 호환용 유지
+const Groq = require('groq-sdk');
+const groqAI = (process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY) ? new Groq({ apiKey: process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY }) : null;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 설정값 (.env에서 로드)
@@ -323,10 +324,9 @@ async function askGemini(analysis, position) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  // 실제 Gemini AI API를 호출하여 자율 판단 진행
-  if (genAI) {
+  // 실제 Groq(Llama 3) AI API를 호출하여 자율 판단 진행
+  if (groqAI) {
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
       let positionText = '미보유 (매수 여부를 판단해주세요. BUY 또는 HOLD)';
       if (position && position.qty > 0) {
@@ -353,23 +353,27 @@ async function askGemini(analysis, position) {
 }
 `;
 
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
+      const response = await groqAI.chat.completions.create({
+        messages: [{ role: "user", content: prompt }],
+        model: "llama-3.3-70b-versatile",
+        response_format: { type: "json_object" },
+      });
+      const text = response.choices[0]?.message?.content || "";
       // 마크다운 백틱 및 공백 제거 후 JSON 파싱
       const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
       const aiResponse = JSON.parse(cleanText);
 
       return {
         decision: aiResponse.decision,
-        reason: `[Gemini 자율판단] ${aiResponse.reason}`
+        reason: `[Llama3 자율판단] ${aiResponse.reason}`
       };
     } catch (error) {
-      log(`Gemini API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
+      log(`Groq API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
       // 오류 시 아래의 기본 봇 로직으로 Fallback
     }
   }
 
-  // 4. 로컬 페르소나 봇 로직 (Gemini API 키가 없거나 통신 실패 시 작동하는 백업)
+  // 4. 로컬 페르소나 봇 로직 (Groq API 키가 없거나 통신 실패 시 작동하는 백업)
   if (position && position.qty > 0) {
     const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
     if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
