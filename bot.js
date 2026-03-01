@@ -34,10 +34,10 @@ const axios = require('axios');
 const crypto = require('crypto');
 const Groq = require('groq-sdk'); // 레거시 호환용
 const { OpenAI } = require('openai');
-const glmAI = process.env.GLM_API_KEY
+const openRouterAI = process.env.OPENROUTER_API_KEY
   ? new OpenAI({
-    apiKey: process.env.GLM_API_KEY,
-    baseURL: "https://open.bigmodel.cn/api/paas/v4/"
+    apiKey: process.env.OPENROUTER_API_KEY,
+    baseURL: "https://openrouter.ai/api/v1"
   })
   : null;
 
@@ -329,8 +329,8 @@ async function askGemini(analysis, position) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  // 실제 GLM-4-Flash(Zhipu AI) API를 호출하여 자율 판단 진행
-  if (glmAI) {
+  // 실제 OpenRouter(Llama 3.3) AI API를 호출하여 자율 판단 진행
+  if (openRouterAI) {
     try {
 
       let positionText = '미보유 (매수 여부를 판단해주세요. BUY 또는 HOLD)';
@@ -358,9 +358,9 @@ async function askGemini(analysis, position) {
 }
 `;
 
-      const response = await glmAI.chat.completions.create({
+      const response = await openRouterAI.chat.completions.create({
         messages: [{ role: "user", content: prompt }],
-        model: "glm-5",
+        model: "meta-llama/llama-3.3-70b-instruct:free",
       });
       const text = response.choices[0]?.message?.content || "";
       // 마크다운 백틱 및 공백 제거 후 JSON 파싱
@@ -369,15 +369,15 @@ async function askGemini(analysis, position) {
 
       return {
         decision: aiResponse.decision,
-        reason: `[GLM-4 자율판단] ${aiResponse.reason}`
+        reason: `[Llama3 자율판단] ${aiResponse.reason}`
       };
     } catch (error) {
-      log(`GLM API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
+      log(`OpenRouter API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
       // 오류 시 아래의 기본 봇 로직으로 Fallback
     }
   }
 
-  // 4. 로컬 페르소나 봇 로직 (GLM API 키가 없거나 통신 실패 시 작동하는 백업)
+  // 4. 로컬 페르소나 봇 로직 (OpenRouter API 키가 없거나 통신 실패 시 작동하는 백업)
   if (position && position.qty > 0) {
     const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
     if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
