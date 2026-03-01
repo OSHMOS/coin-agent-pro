@@ -34,13 +34,8 @@ const axios = require('axios');
 const crypto = require('crypto');
 const Groq = require('groq-sdk'); // 레거시 호환용
 const { OpenAI } = require('openai');
-const openRouterAI = process.env.OPENROUTER_API_KEY
-  ? new OpenAI({
-    apiKey: process.env.OPENROUTER_API_KEY,
-    baseURL: "https://openrouter.ai/api/v1"
-  })
-  : null;
-
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 설정값 (.env에서 로드)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -54,8 +49,8 @@ const CONFIG = {
   // 대상 코인 (쉼표 구분)
   TARGET_COINS: (process.env.BOT_TARGET_COINS || 'BTC,ETH').split(',').map(c => c.trim().toUpperCase()),
 
-  // 체크 주기 (밀리초)
-  CHECK_INTERVAL_MS: parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '1') * 60 * 1000,
+  // 체크 주기 (밀리초) - 구글 무료 할당량(1,500회) 한도를 24H 봇에서 절대 초과하지 않도록 최소 6분 보장
+  CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '6'), 6) * 60 * 1000,
 
   // 1회 매수 금액 (원)
   BUY_AMOUNT_KRW: parseInt(process.env.BOT_BUY_AMOUNT_KRW || '50000'),
@@ -329,9 +324,13 @@ async function askGemini(analysis, position) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  // 실제 OpenRouter(Llama 3.3) AI API를 호출하여 자율 판단 진행
-  if (openRouterAI) {
+  // 구글 Gemini 1.5 Flash 무료 AI 판단 진행 (하루 1500회 영원히 무료)
+  if (genAI) {
     try {
+      const model = genAI.getGenerativeModel({
+        model: "gemini-1.5-flash",
+        generationConfig: { responseMimeType: "application/json" }
+      });
 
       let positionText = '미보유 (매수 여부를 판단해주세요. BUY 또는 HOLD)';
       if (position && position.qty > 0) {
@@ -342,42 +341,35 @@ async function askGemini(analysis, position) {
       const prompt = `
 당신은 종목 선택부터 매수/매도 타이밍까지 100% 자율적으로 결정하는 냉철한 AI 퀀트 트레이더 마스터입니다.
 당신의 최종 목표는 시장의 흐름을 읽고 고점에서 팔고(SELL) 저점에서 매수하며(BUY) 사용자의 총 코인 자산을 궁극적인 목표 금액인 ${CONFIG.TARGET_ASSET_KRW.toLocaleString()}원 이상으로 최대한 불려나가는 것입니다.
-다음 실시간 코인 데이터를 보고 현재 종목에 대해 'BUY', 'SELL', 'HOLD' 중 하나로만 투자 결정을 내리고 그 이유를 논리적인 한국어로 작성해주세요.
+다음 실시간 코인 데이터를 보고 현재 종목에 대해 'BUY', 'SELL', 'HOLD' 중 하나로만 투자 결정을 내리고 그 이유를 한국어로 작성해주세요.
 
-[현재 코인 시장 데이터]
+[현재 시황 데이터]
 - 종목: ${currency}
 - 현재가: ${price}원
 - RSI(상대강도지수): ${rsi} (30 이하면 과매도, 70 이상이면 과매수)
 - 20일 이동평균선(MA20): ${ma20}원 (현재가가 평균선 대비 ${priceVsMa}% 위치)
-- 현재 계좌 상태: ${positionText}
+- 계좌 상태: ${positionText}
 
-아래 제공된 JSON 형식으로만 스크립트 없이 깨끗하게 대답해주세요.
+반드시 다음 JSON 형식으로만 정확히 반환해주세요.
 {
-  "decision": "BUY", "SELL", 또는 "HOLD",
-  "reason": "시장의 기술적 지표(RSI, MA20 등)와 계좌 상태를 종합적으로 고려하여 AI 스스로 내린 결정 이유를 한국어로 작성 (손절이나 익절 시 구체적 이유 명시)"
+  "decision": "BUY",
+  "reason": "AI가 종합 분석한 매수(또는 매도/관망) 판단의 핵심 이유 (구체적으로)"
 }
 `;
 
-      const response = await openRouterAI.chat.completions.create({
-        messages: [{ role: "user", content: prompt }],
-        model: "meta-llama/llama-3.3-70b-instruct:free",
-      });
-      const text = response.choices[0]?.message?.content || "";
-      // 마크다운 백틱 및 공백 제거 후 JSON 파싱
-      const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      const aiResponse = JSON.parse(cleanText);
+      const response = await model.generateContent(prompt);
+      const aiResponse = JSON.parse(response.response.text());
 
       return {
         decision: aiResponse.decision,
-        reason: `[Llama3 자율판단] ${aiResponse.reason}`
+        reason: `[Gemini 자율판단] ${aiResponse.reason}`
       };
     } catch (error) {
-      log(`OpenRouter API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
-      // 오류 시 아래의 기본 봇 로직으로 Fallback
+      log(`Gemini API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
     }
   }
 
-  // 4. 로컬 페르소나 봇 로직 (OpenRouter API 키가 없거나 통신 실패 시 작동하는 백업)
+  // 4. 로컬 페르소나 봇 로직 (Gemini API 키가 없거나 통신 실패 시 작동하는 백업)
   if (position && position.qty > 0) {
     const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
     if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
@@ -650,8 +642,8 @@ async function runCycle() {
         }
       }
 
-      // API 레이트 리밋 방지 (OpenRouter 무료 한도인 1분당 8회를 넘지 않기 위해 코인 1개 탐색 후 8초씩 강제 휴식)
-      await sleep(8000);
+      // API 레이트 리밋 방지 
+      await sleep(1000);
 
     } catch (e) {
       log(`${currency} 분석/거래 중 오류: ${e.message}`, 'error');
