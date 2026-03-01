@@ -34,9 +34,9 @@ const axios = require('axios');
 const crypto = require('crypto');
 const Groq = require('groq-sdk'); // 레거시 호환용
 const { OpenAI } = require('openai');
-const glmAI = (process.env.GLM_API_KEY || process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY)
+const glmAI = process.env.GLM_API_KEY
   ? new OpenAI({
-    apiKey: process.env.GLM_API_KEY || process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY,
+    apiKey: process.env.GLM_API_KEY,
     baseURL: "https://open.bigmodel.cn/api/paas/v4/"
   })
   : null;
