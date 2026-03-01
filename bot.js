@@ -315,20 +315,12 @@ async function analyzeMarket(currency) {
 async function askGemini(analysis, position) {
   const { currency, rsi, price, ma20, priceVsMa } = analysis;
 
-  // 1. 강제 규칙: 보유 중 수익률이 1.5% 이상이면 무조건 기계적 익절 (AI 판단 패스)
-  if (position && position.qty > 0) {
-    const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
-    if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
-      return { decision: 'SELL', reason: `😎 소소하지만 확실한 행복! 원금 보존의 법칙 발동! (+${profitPercent.toFixed(2)}% 기계적 익절)` };
-    }
-  }
-
-  // 2. 데이터 부족 (RSI 계산 불가 등) 시 예외 처리
+  // 데이터 부족 시 예외 처리
   if (rsi === null) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  // 3. 실제 Gemini AI API를 호출하여 딥러닝 판단 진행 (API 키가 있을 경우)
+  // 실제 Gemini AI API를 호출하여 자율 판단 진행
   if (genAI) {
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
@@ -336,24 +328,25 @@ async function askGemini(analysis, position) {
       let positionText = '미보유 (매수 여부를 판단해주세요. BUY 또는 HOLD)';
       if (position && position.qty > 0) {
         const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
-        positionText = `보유 중 (현재 수익률: ${profitPercent.toFixed(2)}%). 강제 규칙: 사용자가 손절은 절대 금지했습니다. 따라서 HOLD를 가장 권장하며, 원상복구를 위해 저점에서 평단가를 낮춰볼 거라면 물타기(BUY) 의견도 허용합니다. (SELL은 1.5% 익절 시 시스템이 자동 스틸하므로 절대 반환하지 마세요)`;
+        positionText = `보유 중 (현재 수익률: ${profitPercent.toFixed(2)}%, 평단가: ${position.avgPrice.toLocaleString()}원). 보유 중이므로 매도(SELL), 추가매수(BUY), 관망(HOLD) 중 자유롭게 판단하세요. 익절과 손절 타이밍은 오직 당신의 자율적인 분석에 달렸습니다.`;
       }
 
       const prompt = `
-당신은 비트코인 및 가상화폐 시장을 냉철하게 분석하는 최고의 AI 트레이더입니다. 
-다음 실시간 코인 데이터를 보고 현재 종목에 대해 'BUY' 또는 'HOLD' 중 하나로만 투자 결정을 내리고, 그 결정에 대한 1~2문장의 분석 이유를 논리적인 한국어로 작성해주세요.
+당신은 종목 선택부터 매수/매도 타이밍까지 100% 자율적으로 결정하는 냉철한 AI 퀀트 트레이더 마스터입니다.
+당신의 최종 목표는 시장의 흐름을 읽고 고점에서 팔고(SELL) 저점에서 매수하며(BUY) 사용자의 총 자산을 최대한으로 불려 목표 수익에 도달하는 것입니다.
+다음 실시간 코인 데이터를 보고 현재 종목에 대해 'BUY', 'SELL', 'HOLD' 중 하나로만 투자 결정을 내리고 그 이유를 논리적인 한국어로 작성해주세요.
 
 [현재 코인 시장 데이터]
 - 종목: ${currency}
 - 현재가: ${price}원
-- RSI(상대강도지수): ${rsi} (30 이하면 과매도/저점 근사, 70 이상이면 과매수/고점 근사)
+- RSI(상대강도지수): ${rsi} (30 이하면 과매도, 70 이상이면 과매수)
 - 20일 이동평균선(MA20): ${ma20}원 (현재가가 평균선 대비 ${priceVsMa}% 위치)
-- 현재 우리 봇의 계좌 상태: ${positionText}
+- 현재 계좌 상태: ${positionText}
 
 아래 제공된 JSON 형식으로만 스크립트 없이 깨끗하게 대답해주세요.
 {
-  "decision": "BUY" 또는 "HOLD",
-  "reason": "시장의 기술적 지표(RSI, MA20 등)를 해석하여 AI 스스로 정립한 결정 이유를 한국어로 작성"
+  "decision": "BUY", "SELL", 또는 "HOLD",
+  "reason": "시장의 기술적 지표(RSI, MA20 등)와 계좌 상태를 종합적으로 고려하여 AI 스스로 내린 결정 이유를 한국어로 작성 (손절이나 익절 시 구체적 이유 명시)"
 }
 `;
 
@@ -363,14 +356,9 @@ async function askGemini(analysis, position) {
       const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
       const aiResponse = JSON.parse(cleanText);
 
-      // 안전장치: AI가 규칙을 무시하고 SELL을 뱉었을 경우 (손절 금지)
-      if (aiResponse.decision === 'SELL') {
-        return { decision: 'HOLD', reason: `(AI 오작동 원본: ${aiResponse.reason}) -> 🚨 AI가 매도를 권장했으나, 사용자의 '무조건 존버' 규칙에 따라 강제 HOLD 명령으로 덮어씌웁니다.` };
-      }
-
       return {
         decision: aiResponse.decision,
-        reason: `[Gemini AI] ${aiResponse.reason}`
+        reason: `[Gemini 자율판단] ${aiResponse.reason}`
       };
     } catch (error) {
       log(`Gemini API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
@@ -381,10 +369,13 @@ async function askGemini(analysis, position) {
   // 4. 로컬 페르소나 봇 로직 (Gemini API 키가 없거나 통신 실패 시 작동하는 백업)
   if (position && position.qty > 0) {
     const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
+    if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
+      return { decision: 'SELL', reason: `😎 백업 엔진 가동: 목표 도달! 기계적 익절! (+${profitPercent.toFixed(2)}%)` };
+    }
     if (profitPercent < 0) {
       return { decision: 'HOLD', reason: `😨 백업 엔진 가동: 물려 있지만... 절대 털리지 않습니다. 존버합니다! (${profitPercent.toFixed(2)}%)` };
     } else {
-      return { decision: 'HOLD', reason: `🔥 백업 엔진 가동: 수익 중입니다! 1.5% 도달 시점까지 파도 끝까지 발라먹겠습니다! (+${profitPercent.toFixed(2)}%)` };
+      return { decision: 'HOLD', reason: `🔥 백업 엔진 가동: 수익 중입니다! 익절가 도달 시점까지 기다립니다 (+${profitPercent.toFixed(2)}%)` };
     }
   }
 
@@ -585,6 +576,30 @@ async function executeSell(currency, currentPrice) {
 // 메인 루프
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+async function getActiveCoins() {
+  try {
+    const tickerData = await coinonePublic('/public/v2/ticker_new/KRW/all');
+    if (!tickerData || !tickerData.tickers) return CONFIG.TARGET_COINS;
+
+    // 거래대금(target_volume * last) 기준으로 정렬하여 가장 핫한(거래가 활발한) 코인 발굴
+    let coins = tickerData.tickers
+      .sort((a, b) => (parseFloat(b.target_volume) * parseFloat(b.last)) - (parseFloat(a.target_volume) * parseFloat(a.last)))
+      .slice(0, 3)
+      .map(t => t.target_currency.toUpperCase());
+
+    // 만약 현재 보유 중인 코인이 있다면, 감시 목록에 무조건 포함 (매도 판단을 위해)
+    for (const heldCoin of Object.keys(botState.positions)) {
+      if (!coins.includes(heldCoin)) {
+        coins.push(heldCoin);
+      }
+    }
+    return coins;
+  } catch (e) {
+    log(`🔥 코인 목록 동적 스캔 실패, 기본 설정 코인으로 대체합니다: ${e.message}`, 'warn');
+    return CONFIG.TARGET_COINS;
+  }
+}
+
 async function runCycle() {
   const cycleStart = Date.now();
   log(`── 분석 사이클 시작 ──`, 'info');
@@ -598,7 +613,10 @@ async function runCycle() {
     log(`📅 새로운 날: 일일 거래 카운트 리셋`, 'info');
   }
 
-  for (const currency of CONFIG.TARGET_COINS) {
+  const activeCoins = await getActiveCoins();
+  log(`🔍 AI 자율 스캔 완료: 이번 턴의 감시 대상 코인은 [${activeCoins.join(', ')}] 입니다.`, 'info');
+
+  for (const currency of activeCoins) {
     try {
       // 1. 시장 분석
       const analysis = await analyzeMarket(currency);
