@@ -32,6 +32,8 @@ const USER_DATA_DIR = process.env.ELECTRON_USER_DATA || __dirname;
 require('dotenv').config({ path: path.join(USER_DATA_DIR, '.env') });
 const axios = require('axios');
 const crypto = require('crypto');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 설정값 (.env에서 로드)
@@ -311,42 +313,86 @@ async function analyzeMarket(currency) {
 // 구글 API의 빡빡한 무료 한도(하루 20회)를 넘어 무제한으로 똑똑한 척 연기하는 봇 엔진입니다.
 
 async function askGemini(analysis, position) {
-  const { currency, rsi, price, ma20 } = analysis;
+  const { currency, rsi, price, ma20, priceVsMa } = analysis;
 
-  // 1. 보유 중인 경우 (매도 여부 판단 or 물타기 매수)
+  // 1. 강제 규칙: 보유 중 수익률이 1.5% 이상이면 무조건 기계적 익절 (AI 판단 패스)
   if (position && position.qty > 0) {
     const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
-
     if (profitPercent >= CONFIG.TAKE_PROFIT_PERCENT) {
-      return { decision: 'SELL', reason: `😎 소소하지만 확실한 행복! 원금 보존의 법칙 발동! (+${profitPercent.toFixed(2)}% 익절 완료)` };
-    }
-    // 손절 절대로 안 함
-
-    if (profitPercent < 0) {
-      return { decision: 'HOLD', reason: `😨 물려 있지만... 절대 털리지 않습니다. 원상복구 될 때까지 존버합니다! (수익률 ${profitPercent.toFixed(2)}%)` };
-    } else {
-      return { decision: 'HOLD', reason: `🔥 수익 중입니다! 존버 정신으로 파도 끝까지 발라먹겠습니다! (수익률 +${profitPercent.toFixed(2)}%)` };
+      return { decision: 'SELL', reason: `😎 소소하지만 확실한 행복! 원금 보존의 법칙 발동! (+${profitPercent.toFixed(2)}% 기계적 익절)` };
     }
   }
 
-  // 2. 미보유 상태 (매수 여부 판단)
+  // 2. 데이터 부족 (RSI 계산 불가 등) 시 예외 처리
   if (rsi === null) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  if (rsi <= CONFIG.RSI_BUY_THRESHOLD) {
-    if (ma20 && price < ma20) {
-      return { decision: 'BUY', reason: `🤩 RSI ${rsi} 과매도에 이평선 아래! 제 피같은 돈을 걸 타이밍입니다! 드가자!!` };
-    } else {
-      return { decision: 'HOLD', reason: `🤔 RSI는 낮지만 아직 완벽하진 않네요... 내 소중한 돈을 함부로 쓸 순 없어.` };
+  // 3. 실제 Gemini AI API를 호출하여 딥러닝 판단 진행 (API 키가 있을 경우)
+  if (genAI) {
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+      let positionText = '미보유 (매수 여부를 판단해주세요. BUY 또는 HOLD)';
+      if (position && position.qty > 0) {
+        const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
+        positionText = `보유 중 (현재 수익률: ${profitPercent.toFixed(2)}%). 강제 규칙: 사용자가 손절은 절대 금지했습니다. 따라서 HOLD를 가장 권장하며, 원상복구를 위해 저점에서 평단가를 낮춰볼 거라면 물타기(BUY) 의견도 허용합니다. (SELL은 1.5% 익절 시 시스템이 자동 스틸하므로 절대 반환하지 마세요)`;
+      }
+
+      const prompt = `
+당신은 비트코인 및 가상화폐 시장을 냉철하게 분석하는 최고의 AI 트레이더입니다. 
+다음 실시간 코인 데이터를 보고 현재 종목에 대해 'BUY' 또는 'HOLD' 중 하나로만 투자 결정을 내리고, 그 결정에 대한 1~2문장의 분석 이유를 논리적인 한국어로 작성해주세요.
+
+[현재 코인 시장 데이터]
+- 종목: ${currency}
+- 현재가: ${price}원
+- RSI(상대강도지수): ${rsi} (30 이하면 과매도/저점 근사, 70 이상이면 과매수/고점 근사)
+- 20일 이동평균선(MA20): ${ma20}원 (현재가가 평균선 대비 ${priceVsMa}% 위치)
+- 현재 우리 봇의 계좌 상태: ${positionText}
+
+아래 제공된 JSON 형식으로만 스크립트 없이 깨끗하게 대답해주세요.
+{
+  "decision": "BUY" 또는 "HOLD",
+  "reason": "시장의 기술적 지표(RSI, MA20 등)를 해석하여 AI 스스로 정립한 결정 이유를 한국어로 작성"
+}
+`;
+
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+      // 마크다운 백틱 및 공백 제거 후 JSON 파싱
+      const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const aiResponse = JSON.parse(cleanText);
+
+      // 안전장치: AI가 규칙을 무시하고 SELL을 뱉었을 경우 (손절 금지)
+      if (aiResponse.decision === 'SELL') {
+        return { decision: 'HOLD', reason: `(AI 오작동 원본: ${aiResponse.reason}) -> 🚨 AI가 매도를 권장했으나, 사용자의 '무조건 존버' 규칙에 따라 강제 HOLD 명령으로 덮어씌웁니다.` };
+      }
+
+      return {
+        decision: aiResponse.decision,
+        reason: `[Gemini AI] ${aiResponse.reason}`
+      };
+    } catch (error) {
+      log(`Gemini API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
+      // 오류 시 아래의 기본 봇 로직으로 Fallback
     }
   }
 
-  if (rsi >= 70) {
-    return { decision: 'HOLD', reason: `🔥 RSI가 ${rsi}라니 완전 불덩이네요! 고점에 물려서 자폭하긴 싫습니다. 빤스런~` };
+  // 4. 로컬 페르소나 봇 로직 (Gemini API 키가 없거나 통신 실패 시 작동하는 백업)
+  if (position && position.qty > 0) {
+    const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
+    if (profitPercent < 0) {
+      return { decision: 'HOLD', reason: `😨 백업 엔진 가동: 물려 있지만... 절대 털리지 않습니다. 존버합니다! (${profitPercent.toFixed(2)}%)` };
+    } else {
+      return { decision: 'HOLD', reason: `🔥 백업 엔진 가동: 수익 중입니다! 1.5% 도달 시점까지 파도 끝까지 발라먹겠습니다! (+${profitPercent.toFixed(2)}%)` };
+    }
   }
 
-  return { decision: 'HOLD', reason: `🥱 아직은 때가 아니네요... 평화로운 차트구먼요. 이럴 땐 섣불리 돈 쓰지 않고 꾹 참겠습니다.` };
+  if (rsi <= CONFIG.RSI_BUY_THRESHOLD && (ma20 && price < ma20)) {
+    return { decision: 'BUY', reason: `🤩 백업 엔진 가동: RSI ${rsi} 과매도에 이평선 아래! 제 피같은 돈을 걸 타이밍입니다! 드가자!!` };
+  } else {
+    return { decision: 'HOLD', reason: `🥱 백업 엔진 가동: 아직은 때가 아니네요... 평화로운 차트구먼요. 꾹 참겠습니다.` };
+  }
 }
 
 function checkBuySafety(currency, state) {
