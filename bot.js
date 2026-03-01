@@ -326,7 +326,7 @@ async function askGemini(analysis, position) {
   // 실제 Gemini AI API를 호출하여 자율 판단 진행
   if (genAI) {
     try {
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
 
       let positionText = '미보유 (매수 여부를 판단해주세요. BUY 또는 HOLD)';
       if (position && position.qty > 0) {
