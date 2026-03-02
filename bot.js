@@ -32,10 +32,8 @@ const USER_DATA_DIR = process.env.ELECTRON_USER_DATA || __dirname;
 require('dotenv').config({ path: path.join(USER_DATA_DIR, '.env') });
 const axios = require('axios');
 const crypto = require('crypto');
-const Groq = require('groq-sdk'); // 레거시 호환용
-const { OpenAI } = require('openai');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+const Groq = require('groq-sdk');
+const groqAI = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 설정값 (.env에서 로드)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -49,8 +47,8 @@ const CONFIG = {
   // 대상 코인 (쉼표 구분)
   TARGET_COINS: (process.env.BOT_TARGET_COINS || 'BTC,ETH').split(',').map(c => c.trim().toUpperCase()),
 
-  // 체크 주기 (밀리초) - 구글 2.5 Flash Lite 무료 할당량(일 1,000회) 한도를 고려하여 최소 4분 보장
-  CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '4'), 4) * 60 * 1000,
+  // 체크 주기 (밀리초) - 최소 1분 보장
+  CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '1'), 1) * 60 * 1000,
 
   // 1회 매수 금액 (원)
   BUY_AMOUNT_KRW: parseInt(process.env.BOT_BUY_AMOUNT_KRW || '50000'),
@@ -316,7 +314,7 @@ async function analyzeMarket(currency) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 구글 API의 빡빡한 무료 한도(하루 20회)를 넘어 무제한으로 똑똑한 척 연기하는 봇 엔진입니다.
 
-async function askGemini(analysis, position) {
+async function askGroq(analysis, position) {
   const { currency, rsi, price, ma20, priceVsMa } = analysis;
 
   // 데이터 부족 시 예외 처리
@@ -324,14 +322,9 @@ async function askGemini(analysis, position) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  // 구글 Gemini 2.5 Flash Lite 무료 AI 판단 진행 (하루 1000회 영원히 무료)
-  if (genAI) {
+  // Groq Llama 3.1 8B 무료 AI 판단 진행 (널널한 API 한도)
+  if (groqAI) {
     try {
-      const model = genAI.getGenerativeModel({
-        model: "gemini-2.5-flash-lite",
-        generationConfig: { responseMimeType: "application/json" }
-      });
-
       let positionText = '미보유 (매수 여부를 판단해주세요. BUY 또는 HOLD)';
       if (position && position.qty > 0) {
         const profitPercent = ((price - position.avgPrice) / position.avgPrice) * 100;
@@ -357,15 +350,20 @@ async function askGemini(analysis, position) {
 }
 `;
 
-      const response = await model.generateContent(prompt);
-      const aiResponse = JSON.parse(response.response.text());
+      const response = await groqAI.chat.completions.create({
+        messages: [{ role: 'user', content: prompt }],
+        model: "llama-3.1-8b-instant",
+        response_format: { type: "json_object" }
+      });
+
+      const aiResponse = JSON.parse(response.choices[0].message.content);
 
       return {
         decision: aiResponse.decision,
-        reason: `[Gemini 자율판단] ${aiResponse.reason}`
+        reason: `[Groq AI 자율판단] ${aiResponse.reason}`
       };
     } catch (error) {
-      log(`Gemini API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
+      log(`Groq API 통신 오류: ${error.message}. 로컬 백업 로직으로 전환합니다.`, 'warn');
     }
   }
 
@@ -630,9 +628,9 @@ async function runCycle() {
       const analysis = await analyzeMarket(currency);
       log(`${currency}: 가격 ${analysis.price?.toLocaleString()}원 | RSI ${analysis.rsi ?? 'N/A'} | MA20 ${analysis.ma20?.toLocaleString() ?? 'N/A'} | vs MA: ${analysis.priceVsMa ?? 'N/A'}%`, 'signal');
 
-      // 2. AI 제미나이 판단 및 매매 실행
+      // 2. AI 판단 및 매매 실행
       const position = botState.positions[currency];
-      const aiDecision = await askGemini(analysis, position);
+      const aiDecision = await askGroq(analysis, position);
 
       log(`🧠 [AI 판단] ${currency} 👉 ${aiDecision.decision} | "${aiDecision.reason}"`, 'signal');
 

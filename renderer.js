@@ -1,7 +1,7 @@
 // DOM 요소 가져오기
 const inAccess = document.getElementById('access_token');
 const inSecret = document.getElementById('secret_key');
-const inGemini = document.getElementById('gemini_key');
+const inGroq = document.getElementById('groq_key');
 const containerTargetCoins = document.getElementById('target_coins');
 const inBuyAmount = document.getElementById('buy_amount');
 const inTargetAsset = document.getElementById('target_asset');
@@ -50,7 +50,7 @@ async function init() {
   if (config) {
     inAccess.value = config.COINONE_ACCESS_TOKEN || '';
     inSecret.value = config.COINONE_SECRET_KEY || '';
-    inGemini.value = config.GEMINI_API_KEY || config.OPENROUTER_API_KEY || config.GLM_API_KEY || config.GROQ_API_KEY || '';
+    inGroq.value = config.GROQ_API_KEY || config.GEMINI_API_KEY || config.OPENROUTER_API_KEY || config.GLM_API_KEY || '';
     if (config.BOT_TARGET_COINS) {
       selectedCoins = config.BOT_TARGET_COINS.split(',').map(c => c.trim()).filter(c => c);
     }
@@ -70,7 +70,7 @@ btnSave.addEventListener('click', async () => {
   const newConfig = {
     COINONE_ACCESS_TOKEN: inAccess.value,
     COINONE_SECRET_KEY: inSecret.value,
-    GEMINI_API_KEY: inGemini.value,
+    GROQ_API_KEY: inGroq.value,
     BOT_TARGET_COINS: selectedCoins.join(','),
     BOT_BUY_AMOUNT_KRW: inBuyAmount.value,
     BOT_TARGET_ASSET_KRW: inTargetAsset.value
