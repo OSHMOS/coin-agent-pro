@@ -49,7 +49,7 @@ const CONFIG = {
   // 대상 코인 (쉼표 구분)
   TARGET_COINS: (process.env.BOT_TARGET_COINS || 'BTC,ETH').split(',').map(c => c.trim().toUpperCase()),
 
-  // 체크 주기 (밀리초) - 구글 무료 할당량(1,500회) 한도를 24H 봇에서 절대 초과하지 않도록 최소 6분 보장
+  // 체크 주기 (밀리초) - 구글 무료 할당량(1,500회) 한도를 24H 봇에서 절대 초과하지 않도록 최소 6분 보장 (Gemini 2.5 Flash 기준)
   CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '6'), 6) * 60 * 1000,
 
   // 1회 매수 금액 (원)
@@ -324,11 +324,11 @@ async function askGemini(analysis, position) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  // 구글 Gemini 1.5 Flash 무료 AI 판단 진행 (하루 1500회 영원히 무료)
+  // 구글 Gemini 2.5 Flash 무료 AI 판단 진행 (하루 1500회 영원히 무료)
   if (genAI) {
     try {
       const model = genAI.getGenerativeModel({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.5-flash",
         generationConfig: { responseMimeType: "application/json" }
       });
 
