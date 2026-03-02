@@ -49,8 +49,8 @@ const CONFIG = {
   // 대상 코인 (쉼표 구분)
   TARGET_COINS: (process.env.BOT_TARGET_COINS || 'BTC,ETH').split(',').map(c => c.trim().toUpperCase()),
 
-  // 체크 주기 (밀리초) - 구글 무료 할당량(1,500회) 한도를 24H 봇에서 절대 초과하지 않도록 최소 6분 보장 (Gemini 2.5 Flash 기준)
-  CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '6'), 6) * 60 * 1000,
+  // 체크 주기 (밀리초) - 구글 2.5 Flash 무료 할당량(일 250회) 한도를 24H 봇에서 절대 초과하지 않도록 1회당 6코인 탐색 고려 최소 35분 보장
+  CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '35'), 35) * 60 * 1000,
 
   // 1회 매수 금액 (원)
   BUY_AMOUNT_KRW: parseInt(process.env.BOT_BUY_AMOUNT_KRW || '50000'),
@@ -324,7 +324,7 @@ async function askGemini(analysis, position) {
     return { decision: 'HOLD', reason: `😵‍💫 데이터가 부족해서 차트를 못 읽겠어요... 일단 지켜볼게요.` };
   }
 
-  // 구글 Gemini 2.5 Flash 무료 AI 판단 진행 (하루 1500회 영원히 무료)
+  // 구글 Gemini 2.5 Flash 무료 AI 판단 진행 (하루 250회 영원히 무료)
   if (genAI) {
     try {
       const model = genAI.getGenerativeModel({
@@ -642,8 +642,8 @@ async function runCycle() {
         }
       }
 
-      // API 레이트 리밋 방지 
-      await sleep(1000);
+      // API 레이트 리밋 방지 (1분당 10회 제한 방어용 8초 슬립)
+      await sleep(8000);
 
     } catch (e) {
       log(`${currency} 분석/거래 중 오류: ${e.message}`, 'error');
