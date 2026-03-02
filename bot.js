@@ -49,8 +49,8 @@ const CONFIG = {
   // 대상 코인 (쉼표 구분)
   TARGET_COINS: (process.env.BOT_TARGET_COINS || 'BTC,ETH').split(',').map(c => c.trim().toUpperCase()),
 
-  // 체크 주기 (밀리초) - 구글 2.5 Flash Lite 무료 할당량(일 1,000회) 한도를 24H 봇에서 절대 초과하지 않도록 1회당 6코인 탐색 고려 최소 9분 보장
-  CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '9'), 9) * 60 * 1000,
+  // 체크 주기 (밀리초) - 구글 2.5 Flash Lite 무료 할당량(일 1,000회) 한도를 고려하여 최소 4분 보장
+  CHECK_INTERVAL_MS: Math.max(parseFloat(process.env.BOT_CHECK_INTERVAL_MIN || '4'), 4) * 60 * 1000,
 
   // 1회 매수 금액 (원)
   BUY_AMOUNT_KRW: parseInt(process.env.BOT_BUY_AMOUNT_KRW || '50000'),
@@ -584,11 +584,16 @@ async function getActiveCoins() {
     const tickerData = await coinonePublic('/public/v2/ticker_new/KRW/all');
     if (!tickerData || !tickerData.tickers) return CONFIG.TARGET_COINS;
 
-    // 거래대금(target_volume * last) 기준으로 정렬하여 가장 핫한(거래가 활발한) 코인 발굴
+    // 거래대금(target_volume * last) 기준으로 정렬하여 가장 핫한(거래가 활발한) 코인 발굴 (API 요청 절약을 위해 1개만)
     let coins = tickerData.tickers
       .sort((a, b) => (parseFloat(b.target_volume) * parseFloat(b.last)) - (parseFloat(a.target_volume) * parseFloat(a.last)))
-      .slice(0, 3)
+      .slice(0, 1)
       .map(t => t.target_currency.toUpperCase());
+
+    // 사용자가 .env에서 설정한 기본 타겟 코인들 포함
+    for (const c of CONFIG.TARGET_COINS) {
+      if (!coins.includes(c)) coins.push(c);
+    }
 
     // 만약 현재 보유 중인 코인이 있다면, 감시 목록에 무조건 포함 (매도 판단을 위해)
     for (const heldCoin of Object.keys(botState.positions)) {
